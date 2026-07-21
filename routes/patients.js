@@ -48,8 +48,7 @@ router.get('/:id', auth, async (req, res) => {
     const patient = await Patient.findById(req.params.id)
       .populate('refDoctor', 'name')
       .populate('refAgent', 'name')
-      .populate('selectedTests.test')
-      .populate('selectedTests.parameters');
+      .populate('selectedTests.test');
 
     if (!patient) {
       return res.status(404).json({ message: 'Patient not found' });
@@ -175,8 +174,7 @@ router.post('/', auth, async (req, res) => {
     const populatedPatient = await Patient.findById(patient._id)
       .populate('refDoctor', 'name')
       .populate('refAgent', 'name')
-      .populate('selectedTests.test')
-      .populate('selectedTests.parameters');
+      .populate('selectedTests.test');
 
     console.log('Populated patient:', JSON.stringify(populatedPatient, null, 2));
     res.json(populatedPatient);
@@ -225,8 +223,7 @@ router.put('/:id', auth, async (req, res) => {
     )
     .populate('refDoctor', 'name')
     .populate('refAgent', 'name')
-    .populate('selectedTests.test')
-    .populate('selectedTests.parameters');
+    .populate('selectedTests.test');
 
     res.json(patient);
   } catch (err) {
