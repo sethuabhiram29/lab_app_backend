@@ -48,7 +48,8 @@ router.get('/:id', auth, async (req, res) => {
     const patient = await Patient.findById(req.params.id)
       .populate('refDoctor', 'name')
       .populate('refAgent', 'name')
-      .populate('selectedTests.test');
+      .populate('selectedTests.test')
+      .populate('selectedTests.parameters');
 
     if (!patient) {
       return res.status(404).json({ message: 'Patient not found' });
@@ -86,7 +87,7 @@ router.post('/', auth, async (req, res) => {
 
     // Basic validation
     console.log('Validation check - name:', name, 'age:', age, 'gender:', gender, 'totalAmount:', totalAmount);
-    if (!name || !age || !gender || !totalAmount) {
+    if (!name || !age || !gender || totalAmount === undefined || totalAmount === null) {
       console.log('Missing required fields:', { name, age, gender, totalAmount });
       return res.status(400).json({ message: 'Please fill in all required fields' });
     }
@@ -174,7 +175,8 @@ router.post('/', auth, async (req, res) => {
     const populatedPatient = await Patient.findById(patient._id)
       .populate('refDoctor', 'name')
       .populate('refAgent', 'name')
-      .populate('selectedTests.test');
+      .populate('selectedTests.test')
+      .populate('selectedTests.parameters');
 
     console.log('Populated patient:', JSON.stringify(populatedPatient, null, 2));
     res.json(populatedPatient);
@@ -223,7 +225,8 @@ router.put('/:id', auth, async (req, res) => {
     )
     .populate('refDoctor', 'name')
     .populate('refAgent', 'name')
-    .populate('selectedTests.test');
+    .populate('selectedTests.test')
+    .populate('selectedTests.parameters');
 
     res.json(patient);
   } catch (err) {
