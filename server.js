@@ -57,7 +57,6 @@ app.use('/api/subtests', require('./routes/subtests'));
 app.use('/api/analysis', require('./routes/analysis'));
 app.use('/api/equipment', require('./routes/equipment'));
 app.use('/api/updation-links', require('./routes/updationLinks'));
-app.use('/api/whatsapp', require('./routes/whatsapp'));
 
 // Error handling middleware
 app.use((err, req, res, next) => {
