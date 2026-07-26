@@ -175,7 +175,8 @@ router.post('/', auth, async (req, res) => {
           return res.status(400).json({ message: 'Invalid pack format' });
         }
         for (const sub of pack.subtests) {
-          if (!sub.subTest || sub.result === undefined || sub.result === null || sub.result === '') {
+          if (!sub.subTest || sub.result === undefined || sub.result === null) {
+            console.error('Validation failed for pack subtest:', sub);
             return res.status(400).json({ message: 'Invalid subtest format in pack' });
           }
         }
@@ -310,10 +311,7 @@ router.post('/', auth, async (req, res) => {
 
     } catch (error) {
       console.error('Error processing report:', error);
-      // If report was saved but stock update failed, delete the report
-      if (report._id) {
-        await Report.findByIdAndDelete(report._id);
-      }
+      // No need to rollback since equipment stock update is removed
       return res.status(500).json({
         message: 'Failed to process report. Please try again.'
       });

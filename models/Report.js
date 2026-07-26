@@ -16,8 +16,7 @@ const ReportSchema = new mongoose.Schema({
             packName: String,
             subtests: [{
                 subTest: {
-                    type: mongoose.Schema.Types.ObjectId,
-                    ref: 'Test',
+                    type: String,
                     required: true
                 },
                 name: String,
@@ -28,8 +27,7 @@ const ReportSchema = new mongoose.Schema({
         }],
         direct: [{
             subTest: {
-                type: mongoose.Schema.Types.ObjectId,
-                ref: 'Test',
+                type: String,
                 required: true
             },
             name: String,
