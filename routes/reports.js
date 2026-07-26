@@ -175,14 +175,14 @@ router.post('/', auth, async (req, res) => {
           return res.status(400).json({ message: 'Invalid pack format' });
         }
         for (const sub of pack.subtests) {
-          if (!sub.subTest || !sub.result || !sub.unit || !sub.range) {
+          if (!sub.subTest || sub.result === undefined || sub.result === null || sub.result === '') {
             return res.status(400).json({ message: 'Invalid subtest format in pack' });
           }
         }
       }
       // Validate direct subtests
       for (const sub of result.direct) {
-        if (!sub.subTest || !sub.result || !sub.unit || !sub.range) {
+        if (!sub.subTest || sub.result === undefined || sub.result === null || sub.result === '') {
           return res.status(400).json({ message: 'Invalid direct subtest format' });
         }
       }
