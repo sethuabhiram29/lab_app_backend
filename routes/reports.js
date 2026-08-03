@@ -164,37 +164,37 @@ router.post('/', auth, async (req, res) => {
       return res.status(404).json({ message: 'Patient not found' });
     }
 
-    // Validate test results (new structure)
-    for (const result of testResults) {
-      if (!result.test || !Array.isArray(result.packs) || !Array.isArray(result.direct)) {
-        return res.status(400).json({ message: 'Invalid test result format' });
-      }
-      // Validate packs
-      for (const pack of result.packs) {
-        if (!pack.packName || !Array.isArray(pack.subtests)) {
-          return res.status(400).json({ message: 'Invalid pack format' });
-        }
-        for (const sub of pack.subtests) {
-          if (!sub.subTest || sub.result === undefined || sub.result === null) {
-            console.error('Validation failed for pack subtest:', sub);
-            return res.status(400).json({ message: 'Invalid subtest format in pack' });
-          }
-        }
-      }
-      // Validate direct subtests
-      for (const sub of result.direct) {
-        if (!sub.subTest || sub.result === undefined || sub.result === null || sub.result === '') {
-          return res.status(400).json({ message: 'Invalid direct subtest format' });
-        }
-      }
+    // Clean and validate test results - filter out any subtests with missing name or result
+    // instead of rejecting the whole report
+    const cleanedTestResults = testResults.map(result => ({
+      ...result,
+      packs: (result.packs || []).map(pack => ({
+        ...pack,
+        subtests: (pack.subtests || []).filter(sub => {
+          const valid = sub.subTest && sub.subTest.trim() !== '' &&
+                        sub.result !== undefined && sub.result !== null;
+          if (!valid) console.warn('Skipping invalid pack subtest:', sub);
+          return valid;
+        })
+      })).filter(pack => pack.subtests.length > 0),
+      direct: (result.direct || []).filter(sub => {
+        const valid = sub.subTest && sub.subTest.trim() !== '' &&
+                      sub.result !== undefined && sub.result !== null;
+        if (!valid) console.warn('Skipping invalid direct subtest:', sub);
+        return valid;
+      })
+    })).filter(result => result.packs.length > 0 || result.direct.length > 0);
+
+    if (!cleanedTestResults.length) {
+      return res.status(400).json({ message: 'No valid test results found after filtering' });
     }
 
     // Process formulas and create report
     // First, fetch all tests that are referenced in the results
     const testNames = new Set();
-    testResults.forEach(result => {
+    cleanedTestResults.forEach(result => {
       result.direct.forEach(sub => testNames.add(sub.subTest));
-      result.packs.forEach(pack => 
+      result.packs.forEach(pack =>
         pack.subtests.forEach(sub => testNames.add(sub.subTest))
       );
     });
@@ -208,7 +208,7 @@ router.post('/', auth, async (req, res) => {
     });
 
     // Process test results with formulas
-    const processedTestResults = testResults.map(result => {
+    const processedTestResults = cleanedTestResults.map(result => {
       // Log the test being processed
       console.log('Processing test:', {
         testId: result.test,
