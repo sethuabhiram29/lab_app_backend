@@ -12,7 +12,7 @@ const { decreaseStockForTest } = require('../utils/equipmentUtils');
 router.get('/', auth, async (req, res) => {
   try {
     const patients = await Patient.find()
-      .populate('refDoctor', 'name')
+      .populate('refDoctor', 'name specialization')
       .populate('refAgent', 'name')
       .populate('selectedTests.test')
       .sort({ createdAt: -1 });
@@ -29,7 +29,7 @@ router.get('/', auth, async (req, res) => {
 router.get('/pending-reports', auth, async (req, res) => {
   try {
     const patients = await Patient.find({ reportStatus: 'pending' })
-      .populate('refDoctor', 'name')
+      .populate('refDoctor', 'name specialization')
       .populate('refAgent', 'name')
       .populate('selectedTests.test')
       .sort({ createdAt: -1 });
@@ -46,7 +46,7 @@ router.get('/pending-reports', auth, async (req, res) => {
 router.get('/:id', auth, async (req, res) => {
   try {
     const patient = await Patient.findById(req.params.id)
-      .populate('refDoctor', 'name')
+      .populate('refDoctor', 'name specialization')
       .populate('refAgent', 'name')
       .populate('selectedTests.test')
       .populate('selectedTests.parameters');
@@ -173,7 +173,7 @@ router.post('/', auth, async (req, res) => {
 
     // Populate the saved patient with references
     const populatedPatient = await Patient.findById(patient._id)
-      .populate('refDoctor', 'name')
+      .populate('refDoctor', 'name specialization')
       .populate('refAgent', 'name')
       .populate('selectedTests.test')
       .populate('selectedTests.parameters');
@@ -223,7 +223,7 @@ router.put('/:id', auth, async (req, res) => {
       { $set: req.body },
       { new: true }
     )
-    .populate('refDoctor', 'name')
+    .populate('refDoctor', 'name specialization')
     .populate('refAgent', 'name')
     .populate('selectedTests.test')
     .populate('selectedTests.parameters');
