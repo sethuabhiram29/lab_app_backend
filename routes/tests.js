@@ -40,7 +40,7 @@ router.post('/', [
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { name, code, description, subtests = [], packs = [] } = req.body;
+    const { name, code, description, defaultNotes = '', image = '', subtests = [], packs = [] } = req.body;
 
     // Check if test code already exists (regardless of active status)
     const existingTest = await Test.findOne({ code: code.trim() });
@@ -71,6 +71,7 @@ router.post('/', [
     const requiresSeparatePage = req.body.requiresSeparatePage === true;
     const processedPacks = packs.map(pack => ({
       ...pack,
+      defaultNotes: pack.defaultNotes ? pack.defaultNotes.trim() : '',
       requiresSeparatePage: pack.requiresSeparatePage === true
     }));
 
@@ -81,6 +82,8 @@ router.post('/', [
       name: name.trim(),
       code: code.trim(),
       description: description ? description.trim() : '',
+      defaultNotes: defaultNotes ? defaultNotes.trim() : '',
+      image,
       subtests,
       packs: processedPacks,
       requiresSeparatePage
@@ -103,7 +106,7 @@ router.post('/', [
 // Update a test
 router.put('/:id', auth, async (req, res) => {
   try {
-    const { name, code, description, image = '', subtests = [], packs = [], requiresSeparatePage = false } = req.body;
+    const { name, code, description, defaultNotes = '', image = '', subtests = [], packs = [], requiresSeparatePage = false } = req.body;
 
     console.log('Raw requiresSeparatePage value:', requiresSeparatePage, typeof requiresSeparatePage);
     console.log('Raw packs requiresSeparatePage values:', packs.map(p => ({ name: p.name, requiresSeparatePage: p.requiresSeparatePage, type: typeof p.requiresSeparatePage })));
@@ -111,6 +114,7 @@ router.put('/:id', auth, async (req, res) => {
     const processedRequiresSeparatePage = requiresSeparatePage === true || requiresSeparatePage === 'true';
     const processedPacks = packs.map(pack => ({
       ...pack,
+      defaultNotes: pack.defaultNotes ? pack.defaultNotes.trim() : '',
       requiresSeparatePage: pack.requiresSeparatePage === true || pack.requiresSeparatePage === 'true'
     }));
 
@@ -148,7 +152,7 @@ router.put('/:id', auth, async (req, res) => {
     }
 
     console.log('Updating test with data:', JSON.stringify({
-      name, code, description, image,
+      name, code, description, defaultNotes, image,
       requiresSeparatePage: processedRequiresSeparatePage,
       subtests: subtests.map(s => ({
         name: s.name,
@@ -163,6 +167,7 @@ router.put('/:id', auth, async (req, res) => {
           name,
           code,
           description,
+          defaultNotes: defaultNotes ? defaultNotes.trim() : '',
           image,
           requiresSeparatePage: processedRequiresSeparatePage,
           subtests: subtests.map(sub => ({
@@ -175,6 +180,7 @@ router.put('/:id', auth, async (req, res) => {
           })),
           packs: processedPacks.map(pack => ({
             name: pack.name,
+            defaultNotes: pack.defaultNotes || '',
             image: pack.image || '',
             requiresSeparatePage: pack.requiresSeparatePage,
             subtests: (pack.subtests || []).map(sub => ({

@@ -14,6 +14,7 @@ const SubTestSchema = new mongoose.Schema({
 
 const PackSchema = new mongoose.Schema({
     name: { type: String, required: true, trim: true },
+    defaultNotes: { type: String, trim: true, default: '' },
     image: { type: String, default: '' },
     requiresSeparatePage: { type: Boolean, default: false },
     subtests: [SubTestSchema]
@@ -23,6 +24,7 @@ const TestSchema = new mongoose.Schema({
     name: { type: String, required: true, trim: true },
     code: { type: String, required: true, trim: true, unique: true, index: true },
     description: { type: String, trim: true },
+    defaultNotes: { type: String, trim: true, default: '' },
     image: { type: String, default: '' },
     subtests: [SubTestSchema],
     packs: [PackSchema],
