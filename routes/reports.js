@@ -56,10 +56,7 @@ router.get('/', auth, async (req, res) => {
     const reports = await Report.find(filter)
       .populate({
         path: 'patient',
-        select: 'name age gender mobileNumber email updationLinks regNo _id createdAt refDoctor refAgent'
-      })
-      .populate({
-        path: 'patient',
+        select: 'name age gender mobileNumber email updationLinks regNo _id createdAt refDoctor refAgent',
         populate: {
           path: 'refDoctor',
           select: 'name specialization contact email'
@@ -293,6 +290,24 @@ router.post('/', auth, async (req, res) => {
 
     try {
       // Equipment stock validation removed - reports can be created regardless of stock
+
+      // Ensure doctor specialization is preserved in reportDisplayData
+      if (reportDisplayData?.patient?.refDoctor) {
+        if (!reportDisplayData.patient.refDoctor.specialization || reportDisplayData.patient.refDoctor.specialization.trim() === '') {
+          const Doctor = require('../models/Doctor');
+          const docId = reportDisplayData.patient.refDoctor._id || patient.refDoctor;
+          let docObj = null;
+          if (docId) {
+            docObj = await Doctor.findById(docId);
+          }
+          if (!docObj && reportDisplayData.patient.refDoctor.name) {
+            docObj = await Doctor.findOne({ name: new RegExp(`^${reportDisplayData.patient.refDoctor.name.trim()}$`, 'i') });
+          }
+          if (docObj && docObj.specialization) {
+            reportDisplayData.patient.refDoctor.specialization = docObj.specialization;
+          }
+        }
+      }
 
       // Create the report
       const report = new Report({
