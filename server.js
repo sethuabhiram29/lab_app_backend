@@ -20,6 +20,8 @@ app.use(cors());
 // Serve static files from uploads directory
 app.use('/uploads', express.static('uploads'));
 
+const whatsappService = require('./services/whatsappService');
+
 // MongoDB Connection with retry logic
 const connectDB = async () => {
   try {
@@ -31,6 +33,8 @@ const connectDB = async () => {
       retryWrites: true
     });
     console.log('Connected to MongoDB');
+    // Initialize WhatsApp Baileys service after DB connection
+    whatsappService.init().catch(err => console.error('[WhatsApp] Startup error:', err));
   } catch (err) {
     console.error('MongoDB connection error:', err.message);
     console.log('Please install MongoDB or set MONGODB_URI environment variable');
@@ -57,6 +61,7 @@ app.use('/api/subtests', require('./routes/subtests'));
 app.use('/api/analysis', require('./routes/analysis'));
 app.use('/api/equipment', require('./routes/equipment'));
 app.use('/api/updation-links', require('./routes/updationLinks'));
+app.use('/api/whatsapp', require('./routes/whatsapp'));
 
 // Error handling middleware
 app.use((err, req, res, next) => {
