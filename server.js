@@ -33,8 +33,6 @@ const connectDB = async () => {
       retryWrites: true
     });
     console.log('Connected to MongoDB');
-    // Initialize WhatsApp Baileys service after DB connection
-    whatsappService.init().catch(err => console.error('[WhatsApp] Startup error:', err));
   } catch (err) {
     console.error('MongoDB connection error:', err.message);
     console.log('Please install MongoDB or set MONGODB_URI environment variable');
@@ -44,6 +42,11 @@ const connectDB = async () => {
 
 // Connect to MongoDB
 connectDB();
+
+// Initialize WhatsApp Open-WA service concurrently on startup
+whatsappService.init().catch(err => console.error('[WhatsApp-OpenWA] Startup error:', err.message));
+
+
 
 // Initialize PIN settings
 require('./scripts/init-pin-settings');

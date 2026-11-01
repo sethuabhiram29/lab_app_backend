@@ -36,3 +36,8 @@ coverage/
 # OS generated files
 .DS_Store
 Thumbs.db
+
+# WhatsApp Session Files
+.open-wa/
+.open-wa-session/
+whatsapp-auth/

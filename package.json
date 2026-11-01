@@ -8,6 +8,7 @@
     "dev": "nodemon server.js"
   },
   "dependencies": {
+    "@open-wa/wa-automate": "^5.10.0",
     "@whiskeysockets/baileys": "^7.0.0-rc14",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",

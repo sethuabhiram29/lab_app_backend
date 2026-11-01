@@ -73,7 +73,7 @@ router.post('/send-report', auth, async (req, res) => {
       targetCaption = `Dear ${patientName},\n\nYour medical diagnostic test report from *Sri Sai Durga Diagnostics* is attached herewith.\n\nThank you for choosing Sri Sai Durga Diagnostics.`;
     }
 
-    // Send PDF document via Baileys
+    // Send PDF document via Open-WA
     const result = await whatsappService.sendPdfDocument(
       targetPhone,
       pdfBase64,
