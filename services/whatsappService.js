@@ -1,187 +1,214 @@
-const { create, ev } = require('@open-wa/wa-automate');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode');
+const pino = require('pino');
 const path = require('path');
 const fs = require('fs');
+const mongoose = require('mongoose');
+const WhatsAppSession = require('../models/WhatsAppSession');
 
-const SESSION_DATA_DIR = path.join(__dirname, '..', '.open-wa-session');
-const SESSION_ID = 'LAB_WHATSAPP_SESSION';
+const AUTH_DIR = path.join(__dirname, '..', 'whatsapp-auth');
 
 class WhatsAppService {
   constructor() {
-    this.client = null;
-    this.status = 'disconnected'; // 'disconnected' | 'qr_ready' | 'connecting' | 'connected'
+    this.sock = null;
+    this.status = 'disconnected'; // 'disconnected' | 'connecting' | 'qr_ready' | 'connected'
     this.currentQR = null;
     this.connectedPhone = null;
     this.pushName = null;
+    this.syncTimeout = null;
     this.isInitializing = false;
-    this.qrListenerRegistered = false;
-
-    this.registerQRListener();
   }
 
-  // Ensure session directory exists
-  ensureSessionDir() {
-    if (!fs.existsSync(SESSION_DATA_DIR)) {
-      fs.mkdirSync(SESSION_DATA_DIR, { recursive: true });
+  // Ensure local auth directory exists
+  ensureAuthDir() {
+    if (!fs.existsSync(AUTH_DIR)) {
+      fs.mkdirSync(AUTH_DIR, { recursive: true });
     }
   }
 
-  // Register global QR event listener from Open-WA
-  registerQRListener() {
-    if (this.qrListenerRegistered) return;
-    this.qrListenerRegistered = true;
-
-    ev.on('qr.**', async (rawQr, sessionId) => {
-      try {
-        console.log(`[WhatsApp-OpenWA] QR Code received for session: ${sessionId}`);
-        if (!rawQr) return;
-
-        if (typeof rawQr === 'string' && rawQr.startsWith('data:image/')) {
-          this.currentQR = rawQr;
-        } else {
-          // Convert string / URL to Data URL for frontend img tag
-          this.currentQR = await qrcode.toDataURL(String(rawQr), {
-            margin: 2,
-            scale: 8,
-            color: {
-              dark: '#0B5240',
-              light: '#FFFFFF'
-            }
-          });
-        }
-        this.status = 'qr_ready';
-        console.log('[WhatsApp-OpenWA] QR Code ready for user pairing in UI.');
-      } catch (err) {
-        console.error('[WhatsApp-OpenWA] Error processing QR event:', err.message);
+  // Restore auth files from MongoDB if local directory is empty (e.g. after Render restart)
+  async restoreAuthFromMongo() {
+    try {
+      if (mongoose.connection.readyState !== 1) {
+        console.log('[WhatsApp] MongoDB not ready yet; skipping auth restore.');
+        return;
       }
-    });
+      this.ensureAuthDir();
+      const files = fs.readdirSync(AUTH_DIR);
+      if (files.length === 0) {
+        console.log('[WhatsApp] Local auth dir empty. Restoring session from MongoDB Atlas...');
+        const storedSessions = await WhatsAppSession.find({});
+        for (const item of storedSessions) {
+          const filePath = path.join(AUTH_DIR, item.key);
+          fs.writeFileSync(filePath, item.data, 'utf-8');
+        }
+        if (storedSessions.length > 0) {
+          console.log(`[WhatsApp] Restored ${storedSessions.length} auth files from MongoDB.`);
+        }
+      }
+    } catch (err) {
+      console.error('[WhatsApp] Error restoring auth from MongoDB:', err.message);
+    }
   }
 
-  // Initialize Open-WA client
-  async init() {
-    if (this.isInitializing) {
-      console.log('[WhatsApp-OpenWA] Client is already initializing. Skipping duplicate call.');
-      return;
-    }
-    if (this.client && this.status === 'connected') {
-      console.log('[WhatsApp-OpenWA] Client is already connected.');
-      return;
-    }
+  // Persist current auth files to MongoDB
+  async syncAuthToMongo() {
+    if (this.syncTimeout) clearTimeout(this.syncTimeout);
+    this.syncTimeout = setTimeout(async () => {
+      try {
+        if (mongoose.connection.readyState !== 1 || !fs.existsSync(AUTH_DIR)) return;
+        const files = fs.readdirSync(AUTH_DIR);
+        for (const file of files) {
+          const filePath = path.join(AUTH_DIR, file);
+          if (fs.statSync(filePath).isFile()) {
+            const data = fs.readFileSync(filePath, 'utf-8');
+            await WhatsAppSession.findOneAndUpdate(
+              { key: file },
+              { key: file, data, updatedAt: new Date() },
+              { upsert: true }
+            );
+          }
+        }
+        console.log(`[WhatsApp] Synced ${files.length} auth files to MongoDB Atlas.`);
+      } catch (err) {
+        console.error('[WhatsApp] Error syncing auth to MongoDB:', err.message);
+      }
+    }, 1500);
+  }
 
+  // Initialize or re-initialize Baileys connection
+  async init() {
+    if (this.isInitializing) return;
     this.isInitializing = true;
-    this.status = 'connecting';
-    this.ensureSessionDir();
 
     try {
-      console.log('[WhatsApp-OpenWA] Starting Open-WA client instance...');
+      this.status = 'connecting';
+      await this.restoreAuthFromMongo();
+      this.ensureAuthDir();
 
-      const client = await create({
-        sessionId: SESSION_ID,
-        userDataDir: SESSION_DATA_DIR,
-        useChrome: true,
-        headless: true,
-        qrTimeout: 0,
-        authTimeout: 0,
-        autoRefresh: true,
-        qrRefreshS: 25,
-        killProcessOnBrowserClose: false,
-        killProcessOnTimeout: false,
-        restartOnCrash: true,
-        disableSpins: true,
-        blockCrashLogs: true,
-        eventMode: true,
-        chromiumArgs: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-gpu',
-          '--no-first-run'
-        ]
+      const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+
+      this.sock = makeWASocket({
+        logger: pino({ level: 'silent' }),
+        printQRInTerminal: false,
+        auth: state,
+        browser: Browsers.macOS('Desktop'),
+        syncFullHistory: false,
+        generateHighQualityLinkPreview: false,
+        connectTimeoutMs: 60000,
+        defaultQueryTimeoutMs: 60000
       });
 
-      this.client = client;
-      this.status = 'connected';
-      this.currentQR = null;
-
-      // Extract host phone number and lab name
-      try {
-        const hostNumber = await client.getHostNumber().catch(() => null);
-        this.connectedPhone = hostNumber ? String(hostNumber).replace(/\D/g, '') : 'Active';
-      } catch (e) {
-        this.connectedPhone = 'Active';
-      }
-      this.pushName = 'Sri Sai Durga Diagnostics';
-
-      console.log(`[WhatsApp-OpenWA] Successfully connected! Phone: ${this.connectedPhone}`);
-
-      // Handle disconnect / logout events
-      client.onLogout(async () => {
-        console.log('[WhatsApp-OpenWA] User logged out from WhatsApp on phone.');
-        await this.handleLogout();
+      // Save credentials event
+      this.sock.ev.on('creds.update', async () => {
+        await saveCreds();
+        this.syncAuthToMongo();
       });
 
-      if (typeof client.onStateChanged === 'function') {
-        client.onStateChanged(async (state) => {
-          console.log(`[WhatsApp-OpenWA] Connection state changed: ${state}`);
-          if (state === 'CONFLICT' || state === 'UNPAIRED' || state === 'UNLAUNCHED') {
-            this.status = 'disconnected';
-          } else if (state === 'CONNECTED') {
-            this.status = 'connected';
+      // Connection update event
+      this.sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr) {
+          try {
+            this.currentQR = await qrcode.toDataURL(qr, {
+              margin: 2,
+              scale: 8,
+              color: {
+                dark: '#0B5240',
+                light: '#FFFFFF'
+              }
+            });
+            this.status = 'qr_ready';
+            console.log('[WhatsApp] Active QR code generated and ready for pairing.');
+          } catch (qrErr) {
+            console.error('[WhatsApp] Error generating QR data URL:', qrErr);
           }
-        });
-      }
+        }
 
+        if (connection === 'close') {
+          const statusCode = lastDisconnect?.error?.output?.statusCode;
+          const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+          console.log(`[WhatsApp] Connection closed (status: ${statusCode}, reconnect: ${shouldReconnect})`);
+
+          if (statusCode === DisconnectReason.loggedOut) {
+            this.status = 'disconnected';
+            this.currentQR = null;
+            this.connectedPhone = null;
+            this.pushName = null;
+            await this.clearAuth();
+            setTimeout(() => {
+              this.isInitializing = false;
+              this.init();
+            }, 3000);
+          } else {
+            this.status = 'connecting';
+            setTimeout(() => {
+              this.isInitializing = false;
+              this.init();
+            }, 5000);
+          }
+        } else if (connection === 'open') {
+          this.status = 'connected';
+          this.currentQR = null;
+
+          const rawId = this.sock.user?.id || '';
+          this.connectedPhone = rawId.split(':')[0] || rawId.split('@')[0];
+          this.pushName = this.sock.user?.name || this.sock.user?.verifiedName || 'Sri Sai Durga Diagnostics';
+
+          console.log(`[WhatsApp] Successfully connected! Phone: ${this.connectedPhone}, Name: ${this.pushName}`);
+          this.syncAuthToMongo();
+        }
+      });
     } catch (err) {
-      console.error('[WhatsApp-OpenWA] Initialization error:', err.message);
+      console.error('[WhatsApp] Initialization error:', err);
       this.status = 'disconnected';
     } finally {
       this.isInitializing = false;
     }
   }
 
-  // Handle logout from device
-  async handleLogout() {
-    this.client = null;
+  // Clear local and MongoDB auth storage
+  async clearAuth() {
+    try {
+      if (fs.existsSync(AUTH_DIR)) {
+        fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+      }
+      if (mongoose.connection.readyState === 1) {
+        await WhatsAppSession.deleteMany({});
+      }
+      console.log('[WhatsApp] Auth files and MongoDB session wiped.');
+    } catch (err) {
+      console.error('[WhatsApp] Error clearing auth:', err.message);
+    }
+  }
+
+  // Disconnect & unpair device
+  async disconnect() {
+    try {
+      if (this.sock) {
+        try {
+          await this.sock.logout();
+        } catch (e) {
+          this.sock.end(new Error('Manual disconnect'));
+        }
+      }
+    } catch (err) {
+      console.error('[WhatsApp] Error logging out socket:', err.message);
+    }
+    await this.clearAuth();
     this.status = 'disconnected';
     this.currentQR = null;
     this.connectedPhone = null;
     this.pushName = null;
-    this.isInitializing = false;
 
-    try {
-      if (fs.existsSync(SESSION_DATA_DIR)) {
-        fs.rmSync(SESSION_DATA_DIR, { recursive: true, force: true });
-      }
-    } catch (e) {
-      console.error('[WhatsApp-OpenWA] Error clearing session dir on logout:', e.message);
-    }
-
-    // Auto restart to generate fresh QR
     setTimeout(() => {
       this.init();
-    }, 3000);
+    }, 2000);
+    return { success: true, message: 'WhatsApp unlinked successfully' };
   }
 
-  // Manual disconnect & unpair device
-  async disconnect() {
-    try {
-      if (this.client) {
-        try {
-          if (typeof this.client.stop === 'function') {
-            await this.client.stop('LOGGED_OUT');
-          }
-        } catch (e) {
-          console.error('[WhatsApp-OpenWA] Error stopping client:', e.message);
-        }
-      }
-    } catch (err) {
-      console.error('[WhatsApp-OpenWA] Error in disconnect:', err.message);
-    }
-
-    return await this.handleLogout();
-  }
-
-  // Normalize phone number to WhatsApp Open-WA format: `${number}@c.us`
+  // Normalize phone number to Baileys format: `${clean}@s.whatsapp.net`
   normalizeJid(phone) {
     if (!phone) throw new Error('Phone number is required');
     let clean = String(phone).replace(/\D/g, '');
@@ -195,43 +222,47 @@ class WhatsAppService {
     if (clean.length < 10 || clean.length > 15) {
       throw new Error(`Invalid phone number: ${phone}. Please enter a valid mobile number.`);
     }
-    return `${clean}@c.us`;
+    return `${clean}@s.whatsapp.net`;
   }
 
-  // Send PDF document directly to recipient
+  // Send PDF document to a recipient
   async sendPdfDocument(phone, pdfBufferOrBase64, fileName = 'Report.pdf', caption = '') {
-    if (this.status !== 'connected' || !this.client) {
+    if (this.status !== 'connected' || !this.sock) {
       throw new Error('WhatsApp is not connected. Please scan the QR code to link your WhatsApp account.');
     }
 
     const jid = this.normalizeJid(phone);
 
-    let dataUrl;
+    let pdfBuffer;
     if (Buffer.isBuffer(pdfBufferOrBase64)) {
-      dataUrl = `data:application/pdf;base64,${pdfBufferOrBase64.toString('base64')}`;
+      pdfBuffer = pdfBufferOrBase64;
     } else if (typeof pdfBufferOrBase64 === 'string') {
-      if (pdfBufferOrBase64.startsWith('data:')) {
-        dataUrl = pdfBufferOrBase64;
-      } else {
-        dataUrl = `data:application/pdf;base64,${pdfBufferOrBase64}`;
-      }
+      const base64Data = pdfBufferOrBase64.replace(/^data:application\/pdf;base64,/, '');
+      pdfBuffer = Buffer.from(base64Data, 'base64');
     } else {
-      throw new Error('Invalid PDF data provided');
+      throw new Error('Invalid PDF document data');
+    }
+
+    if (!pdfBuffer || pdfBuffer.length === 0) {
+      throw new Error('PDF document is empty');
     }
 
     const safeFileName = (fileName || 'Report.pdf').replace(/[^a-zA-Z0-9._-]/g, '_');
     const finalFileName = safeFileName.endsWith('.pdf') ? safeFileName : `${safeFileName}.pdf`;
 
-    console.log(`[WhatsApp-OpenWA] Sending PDF report (${finalFileName}) to ${jid}...`);
+    console.log(`[WhatsApp] Sending PDF (${(pdfBuffer.length / 1024).toFixed(1)} KB) to ${jid}...`);
 
-    const result = await this.client.sendFile(jid, dataUrl, finalFileName, {
+    const result = await this.sock.sendMessage(jid, {
+      document: pdfBuffer,
+      mimetype: 'application/pdf',
+      fileName: finalFileName,
       caption: caption || 'Your medical test report from Sri Sai Durga Diagnostics.'
     });
 
-    console.log(`[WhatsApp-OpenWA] PDF successfully sent to ${jid}`);
+    console.log(`[WhatsApp] PDF sent successfully! Message ID: ${result?.key?.id}`);
     return {
       success: true,
-      messageId: result?._serialized || result?.id || result || 'SENT',
+      messageId: result?.key?.id,
       recipient: jid,
       fileName: finalFileName
     };

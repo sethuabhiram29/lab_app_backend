@@ -33,6 +33,8 @@ const connectDB = async () => {
       retryWrites: true
     });
     console.log('Connected to MongoDB');
+    // Restore session if needed
+    whatsappService.restoreAuthFromMongo().catch(err => console.error('[WhatsApp] Auth restore error:', err.message));
   } catch (err) {
     console.error('MongoDB connection error:', err.message);
     console.log('Please install MongoDB or set MONGODB_URI environment variable');
@@ -43,10 +45,8 @@ const connectDB = async () => {
 // Connect to MongoDB
 connectDB();
 
-// Initialize WhatsApp Open-WA service concurrently on startup
-whatsappService.init().catch(err => console.error('[WhatsApp-OpenWA] Startup error:', err.message));
-
-
+// Initialize WhatsApp Baileys service concurrently on startup
+whatsappService.init().catch(err => console.error('[WhatsApp] Startup error:', err.message));
 
 // Initialize PIN settings
 require('./scripts/init-pin-settings');
@@ -65,6 +65,8 @@ app.use('/api/analysis', require('./routes/analysis'));
 app.use('/api/equipment', require('./routes/equipment'));
 app.use('/api/updation-links', require('./routes/updationLinks'));
 app.use('/api/whatsapp', require('./routes/whatsapp'));
+app.use('/whatsapp', require('./routes/whatsapp'));
+
 
 // Error handling middleware
 app.use((err, req, res, next) => {

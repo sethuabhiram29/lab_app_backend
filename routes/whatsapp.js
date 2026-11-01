@@ -7,8 +7,8 @@ const Patient = require('../models/Patient');
 
 // @route   GET api/whatsapp/status
 // @desc    Get WhatsApp connection status and pairing QR code if available
-// @access  Private
-router.get('/status', auth, (req, res) => {
+// @access  Public
+router.get('/status', (req, res) => {
   try {
     const status = whatsappService.getStatus();
     res.json(status);
@@ -20,8 +20,8 @@ router.get('/status', auth, (req, res) => {
 
 // @route   GET api/whatsapp/qr
 // @desc    Get pairing QR code data URL
-// @access  Private
-router.get('/qr', auth, (req, res) => {
+// @access  Public
+router.get('/qr', (req, res) => {
   try {
     const { qr, status, connected } = whatsappService.getStatus();
     res.json({ qr, status, connected });
