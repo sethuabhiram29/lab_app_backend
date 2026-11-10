@@ -1,4 +1,12 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
+const { 
+  default: makeWASocket, 
+  useMultiFileAuthState, 
+  DisconnectReason, 
+  Browsers, 
+  fetchLatestBaileysVersion,
+  makeCacheableSignalKeyStore 
+} = require('@whiskeysockets/baileys');
+const NodeCache = require('node-cache');
 const qrcode = require('qrcode');
 const pino = require('pino');
 const path = require('path');
@@ -7,6 +15,9 @@ const mongoose = require('mongoose');
 const WhatsAppSession = require('../models/WhatsAppSession');
 
 const AUTH_DIR = path.join(__dirname, '..', 'whatsapp-auth');
+
+// Message retry counter cache outside socket to persist across reconnects
+const msgRetryCounterCache = new NodeCache();
 
 class WhatsAppService {
   constructor() {
@@ -17,6 +28,8 @@ class WhatsAppService {
     this.pushName = null;
     this.syncTimeout = null;
     this.isInitializing = false;
+    // Cache sent messages to answer WhatsApp E2EE retry requests (prevents "Waiting for this message")
+    this.messageStore = new NodeCache({ stdTTL: 604800, maxKeys: 1000 });
   }
 
   // Ensure local auth directory exists
@@ -73,7 +86,7 @@ class WhatsAppService {
       } catch (err) {
         console.error('[WhatsApp] Error syncing auth to MongoDB:', err.message);
       }
-    }, 1500);
+    }, 1200);
   }
 
   // Initialize or re-initialize Baileys connection
@@ -88,12 +101,31 @@ class WhatsAppService {
 
       const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
       const { version } = await fetchLatestBaileysVersion().catch(() => ({ version: [2, 3000, 1043857760] }));
+      const logger = pino({ level: 'silent' });
+
+      // Automatically sync auth to Mongo whenever keys are added or updated
+      const originalKeysSet = state.keys.set;
+      state.keys.set = async (data) => {
+        await originalKeysSet(data);
+        this.syncAuthToMongo();
+      };
 
       this.sock = makeWASocket({
         version,
-        logger: pino({ level: 'silent' }),
+        logger,
         printQRInTerminal: false,
-        auth: state,
+        auth: {
+          creds: state.creds,
+          keys: makeCacheableSignalKeyStore(state.keys, logger)
+        },
+        msgRetryCounterCache,
+        getMessage: async (key) => {
+          if (key?.id) {
+            const msg = this.messageStore.get(key.id);
+            if (msg) return msg;
+          }
+          return undefined;
+        },
         browser: Browsers.macOS('Desktop'),
         syncFullHistory: false,
         generateHighQualityLinkPreview: false,
@@ -233,7 +265,17 @@ class WhatsAppService {
       throw new Error('WhatsApp is not connected. Please scan the QR code to link your WhatsApp account.');
     }
 
-    const jid = this.normalizeJid(phone);
+    let jid = this.normalizeJid(phone);
+
+    // Verify on WhatsApp and resolve canonical registered JID
+    try {
+      const [existsResult] = await this.sock.onWhatsApp(jid);
+      if (existsResult && existsResult.exists && existsResult.jid) {
+        jid = existsResult.jid;
+      }
+    } catch (verifyErr) {
+      console.warn('[WhatsApp] onWhatsApp verification check warning:', verifyErr.message);
+    }
 
     let pdfBuffer;
     if (Buffer.isBuffer(pdfBufferOrBase64)) {
@@ -260,6 +302,12 @@ class WhatsAppService {
       fileName: finalFileName,
       caption: caption || 'Your medical test report from Sri Sai Durga Diagnostics.'
     });
+
+    // Cache message in memory for retry requests to avoid "Waiting for this message"
+    if (result?.key?.id && result?.message) {
+      this.messageStore.set(result.key.id, result.message);
+    }
+    this.syncAuthToMongo();
 
     console.log(`[WhatsApp] PDF sent successfully! Message ID: ${result?.key?.id}`);
     return {

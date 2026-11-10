@@ -74,7 +74,18 @@ router.get('/', auth, async (req, res) => {
         status: r.uploadStatus
       }
     })));
-    res.json(reports);
+    // Defensive deduplication by patient: keep latest report per patient
+    const uniqueReports = [];
+    const seenPatients = new Set();
+    for (const r of reports) {
+      const pid = r.patient?._id ? String(r.patient._id) : (r.patient ? String(r.patient) : String(r._id));
+      if (!seenPatients.has(pid)) {
+        seenPatients.add(pid);
+        uniqueReports.push(r);
+      }
+    }
+
+    res.json(uniqueReports);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -92,7 +103,18 @@ router.get('/history', auth, async (req, res) => {
       .populate('patient', 'name mobileNumber')
       .populate('createdBy', 'name')
       .sort({ reportDate: -1 });
-    res.json(reports);
+    // Defensive deduplication by patient: keep latest report per patient
+    const uniqueReports = [];
+    const seenPatients = new Set();
+    for (const r of reports) {
+      const pid = r.patient?._id ? String(r.patient._id) : (r.patient ? String(r.patient) : String(r._id));
+      if (!seenPatients.has(pid)) {
+        seenPatients.add(pid);
+        uniqueReports.push(r);
+      }
+    }
+
+    res.json(uniqueReports);
   } catch (err) {
     console.error(err.message);
     res.status(500).send('Server Error');
@@ -309,19 +331,34 @@ router.post('/', auth, async (req, res) => {
         }
       }
 
-      // Create the report
-      const report = new Report({
+      // Check if a report already exists for this patient (upsert to prevent duplicates)
+      let report = await Report.findOne({ patient: patientId });
+      if (report) {
+        report.testResults = processedTestResults;
+        if (reportDisplayData) {
+          report.reportDisplayData = reportDisplayData;
+        }
+        report.reportDate = new Date();
+        report.createdBy = req.user._id;
+        if (req.body.driveLinks) report.driveLinks = req.body.driveLinks;
+        if (req.body.updationLinks) report.updationLinks = req.body.updationLinks;
+        const savedReport = await report.save();
+        return res.json(savedReport);
+      }
+
+      // Create new report if one does not exist
+      report = new Report({
         patient: patientId,
         testResults: processedTestResults,
         createdBy: req.user._id,
         reportDate: new Date(),
-        reportDisplayData: reportDisplayData || null
+        reportDisplayData: reportDisplayData || null,
+        driveLinks: req.body.driveLinks || null,
+        updationLinks: req.body.updationLinks || null
       });
 
-      // Save the report first to ensure it's valid
+      // Save the report
       const savedReport = await report.save();
-
-      // Equipment stock management removed - no longer tied to report creation
       return res.json(savedReport);
 
     } catch (error) {
