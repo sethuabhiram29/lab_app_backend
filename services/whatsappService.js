@@ -4,7 +4,9 @@ const {
   DisconnectReason, 
   Browsers, 
   fetchLatestBaileysVersion,
-  makeCacheableSignalKeyStore 
+  makeCacheableSignalKeyStore,
+  proto,
+  jidNormalizedUser
 } = require('@whiskeysockets/baileys');
 const NodeCache = require('node-cache');
 const qrcode = require('qrcode');
@@ -13,11 +15,12 @@ const path = require('path');
 const fs = require('fs');
 const mongoose = require('mongoose');
 const WhatsAppSession = require('../models/WhatsAppSession');
+const WhatsAppMessage = require('../models/WhatsAppMessage');
 
 const AUTH_DIR = path.join(__dirname, '..', 'whatsapp-auth');
 
 // Message retry counter cache outside socket to persist across reconnects
-const msgRetryCounterCache = new NodeCache();
+const msgRetryCounterCache = new NodeCache({ stdTTL: 86400, useClones: false });
 
 class WhatsAppService {
   constructor() {
@@ -28,8 +31,8 @@ class WhatsAppService {
     this.pushName = null;
     this.syncTimeout = null;
     this.isInitializing = false;
-    // Cache sent messages to answer WhatsApp E2EE retry requests (prevents "Waiting for this message")
-    this.messageStore = new NodeCache({ stdTTL: 604800, maxKeys: 1000 });
+    // In-memory message store for instant retry responses
+    this.messageStore = new NodeCache({ stdTTL: 604800, maxKeys: 1000, useClones: false });
   }
 
   // Ensure local auth directory exists
@@ -119,11 +122,30 @@ class WhatsAppService {
           keys: makeCacheableSignalKeyStore(state.keys, logger)
         },
         msgRetryCounterCache,
+        // Crucial handler: Fulfills WhatsApp's retry requests so messages decrypt on phones
         getMessage: async (key) => {
           if (key?.id) {
-            const msg = this.messageStore.get(key.id);
-            if (msg) return msg;
+            // 1. Try memory cache
+            const memMsg = this.messageStore.get(key.id);
+            if (memMsg) {
+              console.log(`[WhatsApp] getMessage: Serving message ${key.id} from in-memory cache.`);
+              return memMsg;
+            }
+
+            // 2. Try MongoDB Atlas store
+            try {
+              const stored = await WhatsAppMessage.findOne({ messageId: key.id });
+              if (stored && stored.messageBase64) {
+                const decoded = proto.Message.decode(Buffer.from(stored.messageBase64, 'base64'));
+                this.messageStore.set(key.id, decoded);
+                console.log(`[WhatsApp] getMessage: Restored message ${key.id} from MongoDB Atlas.`);
+                return decoded;
+              }
+            } catch (dbErr) {
+              console.error(`[WhatsApp] Error retrieving message ${key.id} from MongoDB:`, dbErr.message);
+            }
           }
+          console.warn(`[WhatsApp] getMessage: Message not found for key:`, key);
           return undefined;
         },
         browser: Browsers.macOS('Desktop'),
@@ -210,8 +232,10 @@ class WhatsAppService {
       }
       if (mongoose.connection.readyState === 1) {
         await WhatsAppSession.deleteMany({});
+        await WhatsAppMessage.deleteMany({});
       }
-      console.log('[WhatsApp] Auth files and MongoDB session wiped.');
+      this.messageStore.flushAll();
+      console.log('[WhatsApp] Auth files, sessions, and message caches wiped.');
     } catch (err) {
       console.error('[WhatsApp] Error clearing auth:', err.message);
     }
@@ -239,7 +263,7 @@ class WhatsAppService {
     setTimeout(() => {
       this.init();
     }, 2000);
-    return { success: true, message: 'WhatsApp unlinked successfully' };
+    return { success: true, message: 'WhatsApp unlinked successfully. Ready to scan new QR.' };
   }
 
   // Normalize phone number to Baileys format: `${clean}@s.whatsapp.net`
@@ -256,7 +280,7 @@ class WhatsAppService {
     if (clean.length < 10 || clean.length > 15) {
       throw new Error(`Invalid phone number: ${phone}. Please enter a valid mobile number.`);
     }
-    return `${clean}@s.whatsapp.net`;
+    return jidNormalizedUser(`${clean}@s.whatsapp.net`);
   }
 
   // Send PDF document to a recipient
@@ -267,11 +291,14 @@ class WhatsAppService {
 
     let jid = this.normalizeJid(phone);
 
-    // Verify on WhatsApp and resolve canonical registered JID
+    // Verify on WhatsApp: strictly resolve canonical @s.whatsapp.net user JID (avoid raw @lid)
     try {
-      const [existsResult] = await this.sock.onWhatsApp(jid);
-      if (existsResult && existsResult.exists && existsResult.jid) {
-        jid = existsResult.jid;
+      const existsResult = await this.sock.onWhatsApp(jid);
+      if (Array.isArray(existsResult) && existsResult.length > 0) {
+        const target = existsResult[0];
+        if (target && target.exists && target.jid && target.jid.endsWith('@s.whatsapp.net')) {
+          jid = jidNormalizedUser(target.jid);
+        }
       }
     } catch (verifyErr) {
       console.warn('[WhatsApp] onWhatsApp verification check warning:', verifyErr.message);
@@ -303,10 +330,29 @@ class WhatsAppService {
       caption: caption || 'Your medical test report from Sri Sai Durga Diagnostics.'
     });
 
-    // Cache message in memory for retry requests to avoid "Waiting for this message"
+    // 1. Cache message in memory for immediate retry requests
     if (result?.key?.id && result?.message) {
       this.messageStore.set(result.key.id, result.message);
+
+      // 2. Persist binary protobuf message in MongoDB Atlas (survives Render restarts)
+      try {
+        const rawBytes = proto.Message.encode(result.message).finish();
+        await WhatsAppMessage.findOneAndUpdate(
+          { messageId: result.key.id },
+          {
+            messageId: result.key.id,
+            remoteJid: jid,
+            messageBase64: Buffer.from(rawBytes).toString('base64'),
+            createdAt: new Date()
+          },
+          { upsert: true }
+        );
+        console.log(`[WhatsApp] Persisted message ${result.key.id} in MongoDB for E2EE retries.`);
+      } catch (dbErr) {
+        console.error('[WhatsApp] Failed to persist message in MongoDB:', dbErr.message);
+      }
     }
+
     this.syncAuthToMongo();
 
     console.log(`[WhatsApp] PDF sent successfully! Message ID: ${result?.key?.id}`);
