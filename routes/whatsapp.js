@@ -73,6 +73,12 @@ router.post('/send-report', auth, async (req, res) => {
       targetCaption = `Dear ${patientName},\n\nYour medical diagnostic test report from *Sri Sai Durga Diagnostics* is attached herewith.\n\nThank you for choosing Sri Sai Durga Diagnostics.`;
     }
 
+    // Ensure online view link is included in caption if available
+    const vLink = report?.patient?.updationLinks?.viewLink || report?.driveLinks?.viewLink || report?.driveViewLink;
+    if (vLink && targetCaption && !targetCaption.includes('http')) {
+      targetCaption = `${targetCaption}\n\n📄 View/Download Online:\n${vLink}`;
+    }
+
     // Send PDF document via Open-WA
     const result = await whatsappService.sendPdfDocument(
       targetPhone,

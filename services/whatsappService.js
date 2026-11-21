@@ -33,6 +33,8 @@ class WhatsAppService {
     this.isInitializing = false;
     // In-memory message store for instant retry responses
     this.messageStore = new NodeCache({ stdTTL: 604800, maxKeys: 1000, useClones: false });
+    // Signal keystore cache that can be explicitly cleared for specific contacts
+    this.signalCache = new NodeCache({ stdTTL: 300, useClones: false });
   }
 
   // Ensure local auth directory exists
@@ -67,13 +69,16 @@ class WhatsAppService {
     }
   }
 
-  // Persist current auth files to MongoDB
+  // Persist current auth files to MongoDB and prune deleted ones
   async syncAuthToMongo() {
     if (this.syncTimeout) clearTimeout(this.syncTimeout);
     this.syncTimeout = setTimeout(async () => {
       try {
         if (mongoose.connection.readyState !== 1 || !fs.existsSync(AUTH_DIR)) return;
         const files = fs.readdirSync(AUTH_DIR);
+        const diskFileSet = new Set(files);
+
+        // 1. Upsert files on disk to MongoDB
         for (const file of files) {
           const filePath = path.join(AUTH_DIR, file);
           if (fs.statSync(filePath).isFile()) {
@@ -85,6 +90,10 @@ class WhatsAppService {
             );
           }
         }
+
+        // 2. Remove keys from MongoDB that are no longer on disk (e.g. consumed pre-keys or cleared sessions)
+        await WhatsAppSession.deleteMany({ key: { $nin: Array.from(diskFileSet) } });
+
         console.log(`[WhatsApp] Synced ${files.length} auth files to MongoDB Atlas.`);
       } catch (err) {
         console.error('[WhatsApp] Error syncing auth to MongoDB:', err.message);
@@ -119,7 +128,7 @@ class WhatsAppService {
         printQRInTerminal: false,
         auth: {
           creds: state.creds,
-          keys: makeCacheableSignalKeyStore(state.keys, logger)
+          keys: makeCacheableSignalKeyStore(state.keys, logger, this.signalCache)
         },
         msgRetryCounterCache,
         // Crucial handler: Fulfills WhatsApp's retry requests so messages decrypt on phones
@@ -235,6 +244,7 @@ class WhatsAppService {
         await WhatsAppMessage.deleteMany({});
       }
       this.messageStore.flushAll();
+      if (this.signalCache) this.signalCache.flushAll();
       console.log('[WhatsApp] Auth files, sessions, and message caches wiped.');
     } catch (err) {
       console.error('[WhatsApp] Error clearing auth:', err.message);
@@ -283,6 +293,40 @@ class WhatsAppService {
     return jidNormalizedUser(`${clean}@s.whatsapp.net`);
   }
 
+  // Purge any stale session files for a recipient so WhatsApp negotiates a fresh prekey bundle
+  async resetRecipientSession(phone) {
+    try {
+      const clean = String(phone).replace(/\D/g, '');
+      const user = clean.length === 10 ? '91' + clean : clean;
+
+      // 1. Remove local session files for this recipient on disk
+      if (fs.existsSync(AUTH_DIR)) {
+        const files = fs.readdirSync(AUTH_DIR);
+        for (const file of files) {
+          if (file.startsWith('session-') && file.includes(user)) {
+            try {
+              fs.unlinkSync(path.join(AUTH_DIR, file));
+              console.log(`[WhatsApp] Removed stale session file for recipient ${user}: ${file}`);
+            } catch (e) {}
+          }
+        }
+      }
+
+      // 2. Remove session keys for this recipient from MongoDB Atlas
+      if (mongoose.connection.readyState === 1) {
+        const regex = new RegExp(`^session-.*${user}`);
+        await WhatsAppSession.deleteMany({ key: regex });
+      }
+
+      // 3. Clear Baileys signal cache so it doesn't return stale session from memory
+      if (this.signalCache) {
+        this.signalCache.flushAll();
+      }
+    } catch (err) {
+      console.warn('[WhatsApp] Error resetting recipient session:', err.message);
+    }
+  }
+
   // Send PDF document to a recipient
   async sendPdfDocument(phone, pdfBufferOrBase64, fileName = 'Report.pdf', caption = '') {
     if (this.status !== 'connected' || !this.sock) {
@@ -302,6 +346,22 @@ class WhatsAppService {
       }
     } catch (verifyErr) {
       console.warn('[WhatsApp] onWhatsApp verification check warning:', verifyErr.message);
+    }
+
+    // Always reset recipient's session before dispatching
+    // This forces Baileys to query WhatsApp servers for a fresh PreKey bundle
+    // preventing the second/subsequent message "Waiting for this message" lock-up
+    await this.resetRecipientSession(phone);
+
+    // Warm up the chat presence so WhatsApp's routing servers synchronize with the recipient
+    try {
+      await this.sock.presenceSubscribe(jid);
+      await new Promise(r => setTimeout(r, 400));
+      await this.sock.sendPresenceUpdate('composing', jid);
+      await new Promise(r => setTimeout(r, 600));
+      await this.sock.sendPresenceUpdate('paused', jid);
+    } catch (pErr) {
+      // non-fatal
     }
 
     let pdfBuffer;
